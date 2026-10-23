@@ -1,0 +1,397 @@
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.test import TestCase
+from django.urls import reverse
+
+from usuarios.models import Perfil
+from verbos.models import Verbo
+from vocabulario.models import Palabra
+
+from . import servicios
+from .models import Intento
+
+
+class BaseTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        call_command('cargar_datos', verbosity=0)
+        cls.user = get_user_model().objects.create_user('ana', password='clave-segura-123')
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+
+class PracticaTests(BaseTest):
+    def test_paginas_cargan(self):
+        for nombre in ['inicio', 'tarjetas', 'quiz_vocab', 'quiz_verbos', 'progreso', 'lista_vocabulario',
+                       'lista_verbos', 'nivel_intro', 'nivel_test', 'consejos', 'mis_palabras']:
+            self.assertEqual(self.client.get(reverse(nombre)).status_code, 200, nombre)
+
+    def test_requiere_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('inicio'))
+        self.assertRedirects(resp, f"{reverse('login')}?next={reverse('inicio')}")
+
+    def test_quiz_vocab_correcto_e_incorrecto(self):
+        self.client.get(reverse('quiz_vocab'))
+        palabra = Palabra.objects.get(pk=self.client.session['palabra_actual'])
+        resp = self.client.post(reverse('quiz_vocab'), {'respuesta': f'  {palabra.ingles.upper()} '})
+        self.assertTrue(resp.context['correcto'])
+        self.client.get(reverse('quiz_vocab'))
+        resp = self.client.post(reverse('quiz_vocab'), {'respuesta': 'zzz'})
+        self.assertFalse(resp.context['correcto'])
+        self.assertEqual(Intento.objects.filter(usuario=self.user).count(), 2)
+
+    def test_quiz_verbos_cada_tiempo(self):
+        for tiempo in ['presente', 'pasado', 'futuro']:
+            self.client.get(reverse('quiz_verbos'), {'tiempo': tiempo})
+            actual = self.client.session['ejercicio_actual']
+            resp = self.client.post(
+                reverse('quiz_verbos'), {'tiempo': tiempo, 'respuesta': actual['respuestas'][0]},
+            )
+            self.assertTrue(resp.context['correcto'], (tiempo, actual))
+
+    def test_ejercicios_por_tiempo(self):
+        go = Verbo.objects.get(infinitivo='go')
+        self.assertEqual(go.ejercicio('pasado')['respuestas'], ['went'])
+        self.assertIn(go.ejercicio('presente')['respuestas'][0], ['go', 'goes'])
+        self.assertIn(go.ejercicio('futuro')['respuestas'][0],
+                      {'will go', 'am going to go', 'is going to go', 'are going to go'})
+
+    def test_be_no_se_ejercita(self):
+        self.assertFalse(Verbo.objects.get(infinitivo='be').ejercitable)
+
+    def test_tarjeta_registra_intento(self):
+        p = Palabra.objects.first()
+        resp = self.client.post(
+            reverse('registrar_tarjeta'), {'palabra_id': p.id, 'correcto': True}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(Intento.objects.get(tipo='tarjeta').correcto)
+
+    def test_racha_y_resumen(self):
+        p = Palabra.objects.first()
+        Intento.objects.create(usuario=self.user, tipo='vocab', palabra=p, correcto=False)
+        self.assertEqual(servicios.racha(self.user), 1)
+        self.assertEqual(servicios.resumen(self.user)['porcentaje'], 0)
+
+    def test_registro_de_usuario(self):
+        self.client.logout()
+        resp = self.client.post(reverse('registro'), {
+            'username': 'nuevo', 'password1': 'una-clave-larga-987', 'password2': 'una-clave-larga-987',
+        })
+        self.assertRedirects(resp, reverse('inicio'))
+
+
+class NivelTests(BaseTest):
+    def test_datos_cargados_en_10_bloques(self):
+        niveles = set(Palabra.objects.oficiales().filter(nivel__isnull=False).values_list('nivel', flat=True))
+        self.assertEqual(niveles, set(range(1, 11)))
+        self.assertGreaterEqual(Palabra.objects.oficiales().filter(nivel__isnull=False).count(), 950)
+
+    def test_cargar_datos_es_idempotente(self):
+        antes = Palabra.objects.count()
+        call_command('cargar_datos', verbosity=0)
+        self.assertEqual(Palabra.objects.count(), antes)
+
+    def test_construir_test(self):
+        preguntas = servicios.construir_test()
+        self.assertEqual(len(preguntas), servicios.BLOQUES * servicios.PREGUNTAS_POR_BLOQUE)
+        for q in preguntas:
+            self.assertEqual(len(q['opciones']), servicios.OPCIONES)
+            self.assertIn(q['id'], [o['id'] for o in q['opciones']])
+            self.assertEqual(len({o['espanol'] for o in q['opciones']}), servicios.OPCIONES)
+
+    def _respuestas(self, preguntas, acierta_hasta):
+        """Acierta las preguntas de los bloques <= acierta_hasta y se equivoca (o no sabe) en el resto."""
+        niveles = dict(Palabra.objects.filter(id__in=[q['id'] for q in preguntas]).values_list('id', 'nivel'))
+        return [
+            {'palabra_id': q['id'], 'elegida_id': q['id'] if niveles[q['id']] <= acierta_hasta else None}
+            for q in preguntas
+        ]
+
+    def test_evaluar_todo_correcto(self):
+        res = servicios.evaluar_nivel(self._respuestas(servicios.construir_test(), 10))
+        self.assertEqual(res['nivel_inicial'], 11)
+        self.assertGreaterEqual(res['vocab_estimado'], 950)
+
+    def test_evaluar_todo_incorrecto(self):
+        res = servicios.evaluar_nivel(self._respuestas(servicios.construir_test(), 0))
+        self.assertEqual(res['nivel_inicial'], 1)
+        self.assertEqual(res['vocab_estimado'], 0)
+
+    def test_evaluar_mitad(self):
+        res = servicios.evaluar_nivel(self._respuestas(servicios.construir_test(), 5))
+        self.assertEqual(res['nivel_inicial'], 6)
+        self.assertTrue(400 <= res['vocab_estimado'] <= 520, res['vocab_estimado'])
+
+    def test_evaluar_ignora_basura_y_duplicados(self):
+        p = Palabra.objects.oficiales().filter(nivel=1).first()
+        res = servicios.evaluar_nivel([
+            {'palabra_id': p.id, 'elegida_id': p.id}, {'palabra_id': p.id, 'elegida_id': p.id},
+            {'palabra_id': 999999, 'elegida_id': 1}, 'texto', {},
+        ])
+        self.assertEqual(res['detalle']['1']['total'], 1)
+
+    def test_post_guarda_perfil_y_muestra_resultado(self):
+        preguntas = servicios.construir_test()
+        resp = self.client.post(
+            reverse('nivel_test'), {'respuestas': self._respuestas(preguntas, 3)}, content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        perfil = Perfil.objects.get(usuario=self.user)
+        self.assertEqual(perfil.nivel_inicial, 4)
+        self.assertIsNotNone(perfil.test_fecha)
+        self.assertEqual(self.client.get(reverse('nivel_resultado')).status_code, 200)
+
+    def test_post_invalido(self):
+        resp = self.client.post(reverse('nivel_test'), 'no es json', content_type='application/json')
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post(reverse('nivel_test'), {'respuestas': []}, content_type='application/json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_resultado_sin_test_redirige(self):
+        self.assertRedirects(self.client.get(reverse('nivel_resultado')), reverse('nivel_intro'))
+
+    def test_estado_cuenta_palabras_asumidas(self):
+        Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 4})
+        est = servicios.estado(self.user)
+        esperadas = Palabra.objects.oficiales().filter(nivel__lt=4).count()
+        self.assertEqual(est['asumidas'], esperadas)
+        self.assertEqual(est['bloque_activo'], 4)
+        self.assertFalse(est['desbloqueado'])
+
+    def test_practica_se_centra_en_el_bloque_activo(self):
+        Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 6})
+        for p in servicios.elegir_palabras(self.user, n=60):
+            self.assertTrue(p.nivel is None or p.nivel >= 6, p)
+
+    def test_dominar_un_bloque_avanza_al_siguiente(self):
+        Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 9})
+        for p in Palabra.objects.oficiales().filter(nivel=9):
+            for _ in range(3):
+                Intento.objects.create(usuario=self.user, tipo='vocab', palabra=p, correcto=True)
+        self.assertEqual(servicios.estado(self.user)['bloque_activo'], 10)
+
+    def test_palabras_dominadas_pesan_menos(self):
+        p = Palabra.objects.oficiales().filter(nivel=1).first()
+        for _ in range(3):
+            Intento.objects.create(usuario=self.user, tipo='vocab', palabra=p, correcto=True)
+        self.assertIn(p.id, servicios.estado(self.user)['ids_dominadas'])
+
+
+class MisPalabrasTests(BaseTest):
+    def test_bloqueado_antes_de_dominar(self):
+        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
+        self.assertRedirects(resp, reverse('mis_palabras'))
+        self.assertFalse(Palabra.objects.filter(ingles='zebra').exists())
+
+    def test_desbloqueado_permite_agregar_y_son_privadas(self):
+        Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 11})
+        self.assertTrue(servicios.estado(self.user)['desbloqueado'])
+        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
+        self.assertRedirects(resp, reverse('mis_palabras'))
+        palabra = Palabra.objects.get(ingles='zebra')
+        self.assertEqual(palabra.propietario, self.user)
+        # Otra persona no la ve ni puede borrarla.
+        otro = get_user_model().objects.create_user('beto', password='clave-segura-123')
+        self.assertFalse(Palabra.objects.visibles(otro).filter(ingles='zebra').exists())
+        self.client.force_login(otro)
+        self.client.post(reverse('borrar_palabra', args=[palabra.pk]))
+        self.assertTrue(Palabra.objects.filter(pk=palabra.pk).exists())
+
+    def test_no_permite_duplicar(self):
+        Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 11})
+        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'Apple', 'espanol': 'manzana'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(Palabra.objects.filter(propietario=self.user).exists())
+
+    def test_el_admin_puede_agregar_sin_desbloquear(self):
+        self.user.is_staff = True
+        self.user.save()
+        self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
+        self.assertTrue(Palabra.objects.filter(propietario=self.user, ingles='zebra').exists())
+
+
+class TecnicoTests(BaseTest):
+    def test_categorias_tecnicas_cargadas_con_ejemplo(self):
+        from vocabulario.models import Categoria
+        tecnicas = Categoria.objects.filter(es_tecnica=True)
+        self.assertEqual(tecnicas.count(), 6)
+        palabras = Palabra.objects.filter(categoria__in=tecnicas)
+        self.assertGreaterEqual(palabras.count(), 150)
+        self.assertFalse(palabras.filter(ejemplo='').exists())
+        self.assertFalse(palabras.filter(nivel__isnull=False).exists())
+
+    def test_nucleo_no_se_mezcla_con_tecnico_al_recargar(self):
+        # 'salary' existe en el núcleo y en el vocabulario técnico.
+        call_command('cargar_datos', verbosity=0)
+        nucleo = Palabra.objects.get(ingles='salary', categoria__es_tecnica=False)
+        tecnica = Palabra.objects.get(ingles='salary', categoria__es_tecnica=True)
+        self.assertIsNotNone(nucleo.nivel)
+        self.assertIsNone(tecnica.nivel)
+
+    def test_practica_por_defecto_excluye_tecnico(self):
+        for p in servicios.elegir_palabras(self.user, n=100):
+            self.assertFalse(p.categoria.es_tecnica, p)
+
+    def test_se_puede_practicar_una_categoria_tecnica(self):
+        palabras = servicios.elegir_palabras(self.user, 'dev-git', n=5)
+        self.assertEqual(len(palabras), 5)
+        self.assertTrue(all(p.categoria.slug == 'dev-git' for p in palabras))
+        resp = self.client.get(reverse('tarjetas'), {'categoria': 'dev-git'})
+        self.assertEqual(len(resp.context['palabras']), 20)
+
+    def test_dominar_tecnico_no_cuenta_para_la_meta(self):
+        antes = servicios.estado(self.user)['total']
+        for p in Palabra.objects.filter(categoria__es_tecnica=True):
+            for _ in range(3):
+                Intento.objects.create(usuario=self.user, tipo='vocab', palabra=p, correcto=True)
+        est = servicios.estado(self.user)
+        self.assertEqual(est['total'], antes)
+        self.assertEqual(est['tecnicas_dominadas'], est['tecnicas_total'])
+        self.assertFalse(est['desbloqueado'])
+
+    def test_inicio_muestra_seccion_tecnica(self):
+        resp = self.client.get(reverse('inicio'))
+        self.assertContains(resp, 'Inglés para desarrolladores')
+        self.assertContains(resp, 'dev-ops')
+
+
+class FrasesTests(BaseTest):
+    def test_datos_de_frases_cargados(self):
+        from vocabulario.models import Frase
+        self.assertGreaterEqual(Frase.objects.count(), 200)
+        self.assertTrue(Frase.objects.filter(tema='diario').exclude(traduccion='').exists())
+        # Los ejemplos del vocabulario técnico también sirven como frases de dictado.
+        self.assertTrue(Frase.objects.filter(texto='I found a bug in the login page.').exists())
+
+    def test_cargar_datos_no_duplica_frases_ni_preguntas(self):
+        from vocabulario.models import Frase
+        from .models import PreguntaOral
+        antes = (Frase.objects.count(), PreguntaOral.objects.count())
+        call_command('cargar_datos', verbosity=0)
+        self.assertEqual((Frase.objects.count(), PreguntaOral.objects.count()), antes)
+
+    def test_comparar_frase_exacta_ignora_mayusculas_y_puntuacion(self):
+        r = servicios.comparar_frase("We don't deploy on Fridays.", "we DON'T deploy on fridays")
+        self.assertEqual(r['puntaje'], 100)
+        self.assertTrue(r['correcto'])
+
+    def test_comparar_frase_marca_palabras_mal(self):
+        r = servicios.comparar_frase('I will push the changes today.', 'I will pull the changes today')
+        estados = {p['texto']: p['estado'] for p in r['palabras']}
+        self.assertEqual(estados['push'], 'mal')
+        self.assertEqual(estados['changes'], 'ok')
+        self.assertEqual(r['puntaje'], 83)
+        self.assertFalse(r['correcto'])
+
+    def test_comparar_frase_vacia_y_palabras_de_mas(self):
+        self.assertEqual(servicios.comparar_frase('Hello there', '')['puntaje'], 0)
+        r = servicios.comparar_frase('Hello there', 'well hello there my friend')
+        self.assertLess(r['puntaje'], servicios.UMBRAL_FRASE)
+
+    def test_comparar_frase_con_palabra_faltante(self):
+        r = servicios.comparar_frase('I am on call this weekend', 'I am on call weekend')
+        self.assertFalse(r['correcto'])
+        self.assertEqual(sum(p['estado'] == 'mal' for p in r['palabras']), 1)
+
+    def test_dictado_frases_flujo(self):
+        from vocabulario.models import Frase
+        self.assertEqual(self.client.get(reverse('dictado_frases')).status_code, 200)
+        frase = Frase.objects.get(pk=self.client.session['frase_actual'])
+        resp = self.client.post(reverse('dictado_frases'), {'respuesta': frase.texto})
+        self.assertTrue(resp.context['correcto'])
+        intento = Intento.objects.get(tipo='frase')
+        self.assertEqual((intento.puntaje, intento.frase), (100, frase))
+        self.client.get(reverse('dictado_frases'))
+        resp = self.client.post(reverse('dictado_frases'), {'respuesta': 'nada que ver'})
+        self.assertFalse(resp.context['correcto'])
+
+    def test_dictado_frases_filtra_por_tema(self):
+        from vocabulario.models import Frase
+        for _ in range(10):
+            self.client.get(reverse('dictado_frases'), {'tema': 'diario'})
+            self.assertEqual(Frase.objects.get(pk=self.client.session['frase_actual']).tema, 'diario')
+
+    def test_frase_fallada_pesa_mas(self):
+        from vocabulario.models import Frase
+        f = Frase.objects.filter(tema='diario').first()
+        for _ in range(5):
+            Intento.objects.create(usuario=self.user, tipo='frase', frase=f, correcto=False, puntaje=10)
+        elegidas = [servicios.elegir_frase(self.user, 'diario') for _ in range(300)]
+        # Con peso 11 frente a 1 de las otras 19, debería salir bastante más que 1/20 (15 veces).
+        self.assertGreater(sum(e == f for e in elegidas), 50)
+
+
+class OralTests(BaseTest):
+    def test_paginas(self):
+        for nombre in ['oral', 'oral_historial']:
+            self.assertEqual(self.client.get(reverse(nombre)).status_code, 200, nombre)
+
+    def test_preguntas_cargadas(self):
+        from .models import PreguntaOral
+        self.assertGreaterEqual(PreguntaOral.objects.count(), 25)
+        self.assertEqual(set(PreguntaOral.objects.values_list('tema', flat=True)), {'entrevista', 'tecnica', 'reunion'})
+        self.assertFalse(PreguntaOral.objects.filter(modelo='').exists())
+
+    def test_la_pregunta_del_dia_se_mantiene_y_se_puede_cambiar(self):
+        p1 = self.client.get(reverse('oral')).context['pregunta']
+        p2 = self.client.get(reverse('oral')).context['pregunta']
+        self.assertEqual(p1, p2)
+        p3 = self.client.get(reverse('oral'), {'otra': 1}).context['pregunta']
+        self.assertNotEqual(p1, p3)
+        self.assertEqual(self.client.get(reverse('oral')).context['pregunta'], p3)
+
+    def test_filtro_por_tema(self):
+        p = self.client.get(reverse('oral'), {'tema': 'reunion'}).context['pregunta']
+        self.assertEqual(p.tema, 'reunion')
+
+    def test_registrar_practica(self):
+        from .models import RegistroOral
+        p = self.client.get(reverse('oral')).context['pregunta']
+        resp = self.client.post(reverse('oral_registrar'), {
+            'pregunta_id': p.id, 'duracion': '75', 'autoevaluacion': '4', 'notas': 'más vocabulario',
+        })
+        self.assertRedirects(resp, reverse('oral_historial'))
+        r = RegistroOral.objects.get(usuario=self.user)
+        self.assertEqual((r.pregunta, r.duracion_seg, r.autoevaluacion), (p, 75, 4))
+        self.assertContains(self.client.get(reverse('oral_historial')), p.texto)
+
+    def test_registrar_rechaza_nota_invalida(self):
+        from .models import RegistroOral
+        p = self.client.get(reverse('oral')).context['pregunta']
+        for nota in ['0', '6', 'x', '']:
+            self.client.post(reverse('oral_registrar'), {'pregunta_id': p.id, 'autoevaluacion': nota})
+        self.assertFalse(RegistroOral.objects.exists())
+
+    def test_registrar_limita_duracion_y_requiere_post(self):
+        from .models import RegistroOral
+        p = self.client.get(reverse('oral')).context['pregunta']
+        self.client.post(reverse('oral_registrar'), {'pregunta_id': p.id, 'autoevaluacion': '3', 'duracion': '99999'})
+        self.assertEqual(RegistroOral.objects.get().duracion_seg, 3600)
+        self.assertEqual(self.client.get(reverse('oral_registrar')).status_code, 405)
+
+    def test_elegir_pregunta_prefiere_las_no_practicadas(self):
+        from .models import PreguntaOral, RegistroOral
+        todas = list(PreguntaOral.objects.filter(tema='reunion'))
+        for p in todas[:-1]:
+            RegistroOral.objects.create(usuario=self.user, pregunta=p, autoevaluacion=3)
+        for _ in range(20):
+            self.assertEqual(servicios.elegir_pregunta(self.user, 'reunion'), todas[-1])
+
+    def test_la_practica_oral_cuenta_para_la_racha_y_el_resumen(self):
+        from .models import PreguntaOral, RegistroOral
+        self.assertEqual(servicios.racha(self.user), 0)
+        p = PreguntaOral.objects.first()
+        RegistroOral.objects.create(usuario=self.user, pregunta=p, autoevaluacion=2, duracion_seg=90)
+        RegistroOral.objects.create(usuario=self.user, pregunta=p, autoevaluacion=4, duracion_seg=30)
+        self.assertEqual(servicios.racha(self.user), 1)
+        res = servicios.resumen_oral(self.user)
+        self.assertEqual((res['total'], res['minutos'], res['promedio']), (2, 2, 3.0))
+
+    def test_historial_es_privado(self):
+        from .models import PreguntaOral, RegistroOral
+        otro = get_user_model().objects.create_user('beto', password='clave-segura-123')
+        RegistroOral.objects.create(usuario=otro, pregunta=PreguntaOral.objects.first(), autoevaluacion=5, notas='SECRETO')
+        self.assertNotContains(self.client.get(reverse('oral_historial')), 'SECRETO')

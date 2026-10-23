@@ -1,0 +1,126 @@
+{% extends 'base.html' %}
+{% block titulo %}Práctica oral · English Lab{% endblock %}
+{% block contenido %}
+<h1>Práctica oral</h1>
+<div class="fila" style="margin:0 0 16px">
+  <a class="btn {% if tema %}sec{% endif %}" href="?">Todas</a>
+  {% for clave, nombre in temas %}
+    <a class="btn {% if clave != tema %}sec{% endif %}" href="?tema={{ clave }}">{{ nombre }}</a>
+  {% endfor %}
+  <a class="btn sec" href="{% url 'oral_historial' %}">Mi historial</a>
+</div>
+
+{% if not pregunta %}
+  <div class="card">No hay preguntas. Ejecuta <code>python manage.py cargar_datos</code>.</div>
+{% else %}
+<div class="card">
+  <p class="muted">Pregunta del día · {{ pregunta.get_tema_display }}{% if hoy_hecho %} · <b>ya la practicaste hoy</b>{% endif %}</p>
+  <div class="grande">{{ pregunta.texto }}</div>
+  {% if pregunta.traduccion %}<p class="muted">{{ pregunta.traduccion }}</p>{% endif %}
+  <div class="fila">
+    <button class="btn sec" type="button" id="oir">Escuchar la pregunta</button>
+    <a class="btn sec" href="?{% if tema %}tema={{ tema }}&{% endif %}otra=1">Otra pregunta</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Cómo armarla</h2>
+  <p>{{ pregunta.estructura }}</p>
+  {% if pregunta.lista_frases %}
+    <p class="muted">Frases que te pueden servir:</p>
+    <ul>{% for f in pregunta.lista_frases %}<li>{{ f }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details>
+    <summary><b>Ver respuesta modelo</b> <span class="muted">(intenta primero sin mirarla)</span></summary>
+    <p>{{ pregunta.modelo }}</p>
+    <button class="btn sec" type="button" id="oir-modelo">Escuchar el modelo</button>
+  </details>
+</div>
+
+<div class="card">
+  <h2>Responde en voz alta</h2>
+  <p class="muted">Habla 1 o 2 minutos. La grabación no se sube ni se guarda: queda solo en tu navegador para que te escuches.
+     <b>La app no evalúa tu pronunciación</b>; tú la calificas al final.</p>
+  <div class="grande" id="reloj">00:00</div>
+  <div class="fila">
+    <button class="btn" type="button" id="grabar">Empezar</button>
+    <button class="btn bad" type="button" id="parar" hidden>Terminar</button>
+  </div>
+  <p class="muted" id="aviso" hidden></p>
+  <audio id="reproductor" controls hidden style="width:100%;margin-top:12px"></audio>
+
+  <form method="post" action="{% url 'oral_registrar' %}" id="registro" hidden>{% csrf_token %}
+    <input type="hidden" name="pregunta_id" value="{{ pregunta.id }}">
+    <input type="hidden" name="duracion" id="duracion" value="0">
+    <p><label>¿Qué tan fluido te sentiste?
+      <select name="autoevaluacion" required>
+        <option value="">Elige…</option>
+        <option value="1">1 · Muy difícil, me quedé en blanco</option>
+        <option value="2">2 · Difícil, muchas pausas</option>
+        <option value="3">3 · Regular, me entendería con esfuerzo</option>
+        <option value="4">4 · Bien, con pocas pausas</option>
+        <option value="5">5 · Muy fluido</option>
+      </select></label></p>
+    <p><label>¿Qué mejorarías? (opcional)
+      <input type="text" name="notas" maxlength="300" placeholder="Ej.: me faltó vocabulario para describir el reto"></label></p>
+    <button class="btn" type="submit">Guardar en mi registro</button>
+  </form>
+</div>
+
+{% if resumen_oral.total %}
+<p class="muted">Llevas {{ resumen_oral.total }} práctica{{ resumen_oral.total|pluralize }} orales en {{ resumen_oral.dias }} día{{ resumen_oral.dias|pluralize }}.</p>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if pregunta %}
+{{ pregunta.texto|json_script:"texto-pregunta" }}
+{{ pregunta.modelo|json_script:"texto-modelo" }}
+<script>
+  const $ = id => document.getElementById(id);
+  const pregunta = JSON.parse($('texto-pregunta').textContent);
+  const modelo = JSON.parse($('texto-modelo').textContent);
+  $('oir').addEventListener('click', () => hablar(pregunta));
+  $('oir-modelo').addEventListener('click', () => hablar(modelo));
+
+  let inicio = 0, intervalo = null, grabador = null, flujo = null, trozos = [];
+  const formato = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+
+  function empezarReloj() {
+    inicio = Date.now();
+    intervalo = setInterval(() => { $('reloj').textContent = formato(Math.floor((Date.now() - inicio) / 1000)); }, 250);
+  }
+
+  $('grabar').addEventListener('click', async () => {
+    speechSynthesis.cancel();
+    $('grabar').hidden = true; $('parar').hidden = false; $('registro').hidden = true; $('reproductor').hidden = true;
+    trozos = [];
+    try {
+      flujo = await navigator.mediaDevices.getUserMedia({audio: true});
+      grabador = new MediaRecorder(flujo);
+      grabador.ondataavailable = e => trozos.push(e.data);
+      grabador.onstop = () => {
+        flujo.getTracks().forEach(t => t.stop());
+        const url = URL.createObjectURL(new Blob(trozos, {type: grabador.mimeType}));
+        $('reproductor').src = url; $('reproductor').hidden = false;
+      };
+      grabador.start();
+    } catch (e) {
+      grabador = null;
+      $('aviso').textContent = 'No pude usar el micrófono, así que usa solo el cronómetro: habla en voz alta y pulsa «Terminar».';
+      $('aviso').hidden = false;
+    }
+    empezarReloj();
+  });
+
+  $('parar').addEventListener('click', () => {
+    clearInterval(intervalo);
+    if (grabador && grabador.state !== 'inactive') grabador.stop();
+    $('duracion').value = Math.round((Date.now() - inicio) / 1000);
+    $('parar').hidden = true; $('grabar').hidden = false; $('grabar').textContent = 'Grabar de nuevo';
+    $('registro').hidden = false;
+  });
+</script>
+{% endif %}
+{% endblock %}

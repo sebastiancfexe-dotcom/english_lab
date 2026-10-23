@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block titulo %}Vocabulario · English Lab{% endblock %}
+{% block contenido %}
+<h1>Vocabulario</h1>
+{% for c in categorias %}
+<details class="card" {% if forloop.counter <= 2 and c.slug != 'general' %}open{% endif %}>
+  <summary><b>{{ c.nombre }}</b> <span class="muted">({{ c.visibles|length }})</span></summary>
+  <table>
+    <tr><th>Inglés</th><th>Español</th><th></th></tr>
+    {% for p in c.visibles %}
+      <tr><td>{{ p.ingles }}</td><td>{{ p.espanol }}</td>
+          <td><button class="btn sec" type="button" onclick="hablar('{{ p.ingles|escapejs }}')">🔊</button></td></tr>
+    {% endfor %}
+  </table>
+  <div class="fila">
+    <a class="btn" href="{% url 'tarjetas' %}?categoria={{ c.slug }}">Practicar con tarjetas</a>
+    <a class="btn sec" href="{% url 'quiz_vocab' %}?categoria={{ c.slug }}">Quiz</a>
+  </div>
+</details>
+{% empty %}
+<div class="card">Aún no hay vocabulario. Ejecuta <code>python manage.py cargar_datos</code>.</div>
+{% endfor %}
+{% endblock %}

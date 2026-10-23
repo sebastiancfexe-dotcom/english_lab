@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block titulo %}Entrar · English Lab{% endblock %}
+{% block contenido %}
+<div class="card">
+  <h1>Entrar</h1>
+  <form method="post">{% csrf_token %}
+    {{ form.non_field_errors }}
+    <p><label>Usuario<br>{{ form.username }}</label></p>
+    <p><label>Contraseña<br>{{ form.password }}</label></p>
+    <input type="hidden" name="next" value="{{ next }}">
+    <button class="btn" type="submit">Entrar</button>
+    <a class="btn sec" href="{% url 'registro' %}">Crear cuenta</a>
+  </form>
+</div>
+{% endblock %}

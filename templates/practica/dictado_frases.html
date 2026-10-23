@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% block titulo %}Dictado de frases · English Lab{% endblock %}
+{% block contenido %}
+<h1>Dictado de frases</h1>
+<div class="fila" style="margin:0 0 16px">
+  <a class="btn {% if tema %}sec{% endif %}" href="?">Todas</a>
+  {% for clave, nombre in temas %}
+    <a class="btn {% if clave != tema %}sec{% endif %}" href="?tema={{ clave }}">{{ nombre }}</a>
+  {% endfor %}
+</div>
+
+{% if vacio %}
+  <div class="card">No hay frases. Ejecuta <code>python manage.py cargar_datos</code>.</div>
+{% else %}
+<div class="card">
+  {% if resuelto %}
+    <div class="res {% if correcto %}ok{% else %}bad{% endif %}">
+      <b>{{ puntaje }}%</b> · {% if correcto %}¡Muy bien!{% else %}Casi. Repasa las palabras en rojo.{% endif %}
+    </div>
+    <p class="muted">Frase correcta (en rojo, lo que no coincidió):</p>
+    <p class="grande" style="font-size:22px">
+      {% for p in palabras %}<span class="pal {{ p.estado }}">{{ p.texto }}</span> {% endfor %}
+    </p>
+    <p><span class="muted">Tú escribiste:</span> {{ respuesta }}</p>
+    <p><span class="muted">Original:</span> {{ frase.texto }}</p>
+    {% if frase.traduccion %}<p class="muted">{{ frase.traduccion }}</p>{% endif %}
+    <div class="fila">
+      <button class="btn sec" type="button" id="oir">Escuchar</button>
+      <button class="btn sec" type="button" id="oir-lento">Escuchar lento</button>
+      <a class="btn" href="?{% if tema %}tema={{ tema }}{% endif %}">Siguiente</a>
+    </div>
+  {% else %}
+    <p class="muted">Escucha la frase y escríbela completa. No importan las mayúsculas ni los signos.</p>
+    <div class="fila">
+      <button class="btn" type="button" id="oir">Escuchar</button>
+      <button class="btn sec" type="button" id="oir-lento">Escuchar lento</button>
+    </div>
+    <form method="post" autocomplete="off">{% csrf_token %}
+      <input type="hidden" name="tema" value="{{ tema }}">
+      <textarea name="respuesta" rows="3" autofocus required></textarea>
+      <div class="fila"><button class="btn" type="submit">Comprobar</button></div>
+    </form>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if frase %}
+{{ frase.texto|json_script:"texto-frase" }}
+<script>
+  const texto = JSON.parse(document.getElementById('texto-frase').textContent);
+  document.getElementById('oir').addEventListener('click', () => hablar(texto));
+  document.getElementById('oir-lento').addEventListener('click', () => hablar(texto, 0.6));
+  hablar(texto);
+</script>
+{% endif %}
+{% endblock %}

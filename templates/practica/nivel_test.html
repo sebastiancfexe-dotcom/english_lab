@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block titulo %}Test de nivel · English Lab{% endblock %}
+{% block contenido %}
+<h1>Test de nivel</h1>
+{% if preguntas %}
+  <p class="muted">Pregunta <span id="pos">1</span> de {{ preguntas|length }}</p>
+  <div class="barra" style="margin-bottom:16px"><i id="avance" style="width:0"></i></div>
+  <div class="card" id="caja">
+    <p class="muted">¿Qué significa?</p>
+    <div class="grande" id="palabra"></div>
+    <button class="btn sec" type="button" id="oir">Escuchar</button>
+    <div id="opciones" style="display:grid;gap:8px;margin-top:16px"></div>
+    <div class="fila"><button class="btn sec" type="button" id="nose">No la sé</button></div>
+  </div>
+  <div class="card" id="enviando" hidden>Calculando tu nivel…</div>
+{% else %}
+  <div class="card">No hay palabras con nivel. Ejecuta <code>python manage.py cargar_datos</code>.</div>
+{% endif %}
+{{ preguntas|json_script:"datos" }}
+{% endblock %}
+
+{% block scripts %}
+{% if preguntas %}
+<script>
+  const preguntas = JSON.parse(document.getElementById('datos').textContent);
+  const respuestas = [];
+  let i = 0;
+  const $ = id => document.getElementById(id);
+
+  function mostrar() {
+    const q = preguntas[i];
+    $('pos').textContent = i + 1;
+    $('avance').style.width = (100 * i / preguntas.length) + '%';
+    $('palabra').textContent = q.ingles;
+    $('opciones').replaceChildren(...q.opciones.map(o => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn sec'; b.textContent = o.espanol;
+      b.addEventListener('click', () => responder(o.id));
+      return b;
+    }));
+  }
+  async function responder(elegida) {
+    respuestas.push({palabra_id: preguntas[i].id, elegida_id: elegida});
+    i++;
+    if (i < preguntas.length) return mostrar();
+    $('caja').hidden = true; $('enviando').hidden = false;
+    const r = await fetch('{% url "nivel_test" %}', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}'},
+      body: JSON.stringify({respuestas}),
+    });
+    const datos = await r.json();
+    location.href = datos.ok ? datos.siguiente : '{% url "nivel_intro" %}';
+  }
+  $('nose').addEventListener('click', () => responder(null));
+  $('oir').addEventListener('click', () => hablar(preguntas[i].ingles));
+  mostrar();
+</script>
+{% endif %}
+{% endblock %}

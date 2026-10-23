@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+{% block contenido %}
+<h1>Hola, {{ user.username }}</h1>
+
+{% if not perfil.test_fecha %}
+<div class="card" style="border-color:var(--brand)">
+  <h2>Empieza por tu nivel</h2>
+  <p>Un test de 50 preguntas rápidas me dice cuántas palabras conoces y desde dónde practicar.</p>
+  <a class="btn" href="{% url 'nivel_intro' %}">Hacer el test de nivel</a>
+</div>
+{% else %}
+<div class="card">
+  <h2>Tu vocabulario: {{ etiqueta }}</h2>
+  <p>Dominas unas <b>{{ estado.total }}</b> de {{ estado.meta }} palabras.
+    {% if estado.bloque_activo %}Ahora trabajas el <b>bloque {{ estado.bloque_activo }}</b> de {{ estado.ultimo_bloque }}.{% else %}Completaste el núcleo.{% endif %}</p>
+  <div class="barra"><i style="width: {{ estado.porcentaje_meta }}%"></i></div>
+  <div class="fila">
+    <a class="btn sec" href="{% url 'nivel_resultado' %}">Ver mi nivel</a>
+    <a class="btn sec" href="{% url 'consejos' %}">Consejos</a>
+    {% if estado.desbloqueado or user.is_staff %}
+      <a class="btn" href="{% url 'mis_palabras' %}">Agregar mis palabras</a>
+    {% else %}
+      <span class="muted" style="align-self:center">Agregar palabras propias se desbloquea con {{ estado.desbloquea_en }}.</span>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card grid">
+  <div class="stat"><b>{{ resumen.racha }}</b><span>días de racha</span></div>
+  <div class="stat"><b>{{ resumen.hoy }}</b><span>respuestas hoy</span></div>
+  <div class="stat"><b>{{ resumen.porcentaje }}%</b><span>de aciertos</span></div>
+  <div class="stat"><b>{{ resumen.total }}</b><span>respuestas en total</span></div>
+</div>
+
+<div class="card">
+  <h2>Vocabulario diario</h2>
+  <p class="muted">Sin elegir categoría, practicas tu bloque actual.</p>
+  <form method="get" class="fila">
+    <select name="categoria" id="cat" style="max-width:260px">
+      <option value="">Mi bloque actual</option>
+      {% for c in categorias %}<option value="{{ c.slug }}">{{ c.nombre }}</option>{% endfor %}
+    </select>
+  </form>
+  <div class="fila">
+    <a class="btn" data-ir="{% url 'tarjetas' %}" href="{% url 'tarjetas' %}">Tarjetas</a>
+    <a class="btn" data-ir="{% url 'quiz_vocab' %}" href="{% url 'quiz_vocab' %}">Quiz: traducir</a>
+    <a class="btn" data-ir="{% url 'quiz_vocab' %}?modo=dictado" href="{% url 'quiz_vocab' %}?modo=dictado">Dictado</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Frases y práctica oral</h2>
+  <p class="muted">El vocabulario suelto no basta: aquí practicas escuchar, escribir y hablar con frases completas.</p>
+  <div class="fila">
+    <a class="btn" href="{% url 'dictado_frases' %}">Dictado de frases</a>
+    <a class="btn" href="{% url 'dictado_frases' %}?tema=dev">Frases de desarrollo</a>
+    <a class="btn" href="{% url 'oral' %}">Pregunta oral del día</a>
+    <a class="btn sec" href="{% url 'oral_historial' %}">Mi historial oral</a>
+  </div>
+</div>
+
+{% if categorias_tech %}
+<div class="card">
+  <h2>Inglés para desarrolladores</h2>
+  <p class="muted">Vocabulario del día a día en la industria, con oración de ejemplo. Llevas {{ estado.tecnicas_dominadas }} de {{ estado.tecnicas_total }} términos dominados.</p>
+  <div class="barra" style="margin-bottom:8px"><i style="width: {% widthratio estado.tecnicas_dominadas estado.tecnicas_total 100 %}%"></i></div>
+  <table>
+    {% for c in categorias_tech %}
+    <tr>
+      <td>{{ c.nombre }}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <a class="btn sec" href="{% url 'tarjetas' %}?categoria={{ c.slug }}">Tarjetas</a>
+        <a class="btn sec" href="{% url 'quiz_vocab' %}?categoria={{ c.slug }}">Quiz</a>
+        <a class="btn sec" href="{% url 'quiz_vocab' %}?modo=dictado&categoria={{ c.slug }}">Dictado</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Verbos</h2>
+  <p class="muted">Completa la oración con la forma correcta del verbo.</p>
+  <div class="fila">
+    {% for clave, nombre in tiempos %}
+      <a class="btn" href="{% url 'quiz_verbos' %}?tiempo={{ clave }}">{{ nombre }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const cat = document.getElementById('cat');
+  document.querySelectorAll('[data-ir]').forEach(a => a.addEventListener('click', e => {
+    if (!cat.value) return;
+    e.preventDefault();
+    const url = new URL(a.href);
+    url.searchParams.set('categoria', cat.value);
+    location.href = url;
+  }));
+</script>
+{% endblock %}

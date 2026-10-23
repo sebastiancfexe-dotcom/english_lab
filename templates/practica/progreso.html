@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block titulo %}Progreso · English Lab{% endblock %}
+{% block contenido %}
+<h1>Progreso</h1>
+
+<div class="card grid">
+  <div class="stat"><b>{{ resumen.racha }}</b><span>días de racha</span></div>
+  <div class="stat"><b>{{ resumen.total }}</b><span>respuestas</span></div>
+  <div class="stat"><b>{{ resumen.porcentaje }}%</b><span>de aciertos</span></div>
+</div>
+
+{% if por_tipo %}
+<div class="card">
+  <h2>Por tipo de práctica</h2>
+  {% for t in por_tipo %}
+    <p>{{ t.nombre }} · {{ t.porcentaje }}% de {{ t.total }}</p>
+    <div class="barra"><i style="width: {{ t.porcentaje }}%"></i></div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Palabras que más fallas</h2>
+  {% for p in fallos_palabras %}
+    <p>{{ p.ingles }} = {{ p.espanol }} <span class="muted">({{ p.mal }} fallo{{ p.mal|pluralize }})</span></p>
+  {% empty %}<p class="muted">Todavía no hay fallos registrados.</p>{% endfor %}
+</div>
+
+<div class="card">
+  <h2>Verbos que más fallas</h2>
+  {% for v in fallos_verbos %}
+    <p>{{ v.infinitivo }} → {{ v.pasado }} → {{ v.participio }} <span class="muted">({{ v.mal }} fallo{{ v.mal|pluralize }})</span></p>
+  {% empty %}<p class="muted">Todavía no hay fallos registrados.</p>{% endfor %}
+</div>
+{% endblock %}

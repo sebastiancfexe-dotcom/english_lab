@@ -1,0 +1,44 @@
+{% load static %}<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}English Lab{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+  <nav>
+    <a class="marca" href="{% url 'inicio' %}">English Lab</a>
+    {% if user.is_authenticated %}
+      <a href="{% url 'tarjetas' %}">Tarjetas</a>
+      <a href="{% url 'quiz_vocab' %}">Quiz</a>
+      <a href="{% url 'quiz_verbos' %}">Verbos</a>
+      <a href="{% url 'dictado_frases' %}">Frases</a>
+      <a href="{% url 'oral' %}">Hablar</a>
+      <a href="{% url 'lista_vocabulario' %}">Vocabulario</a>
+      <a href="{% url 'lista_verbos' %}">Lista de verbos</a>
+      <a href="{% url 'nivel_intro' %}">Mi nivel</a>
+      <a href="{% url 'mis_palabras' %}">Mis palabras</a>
+      <a href="{% url 'consejos' %}">Consejos</a>
+      <a href="{% url 'progreso' %}">Progreso</a>
+      <span class="espacio"></span>
+      {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+      <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">Salir ({{ user.username }})</button></form>
+    {% endif %}
+  </nav>
+  <main>
+    {% for m in messages %}<div class="res {% if m.tags == 'error' %}bad{% else %}ok{% endif %}">{{ m }}</div>{% endfor %}
+    {% block contenido %}{% endblock %}
+  </main>
+  <script>
+    function hablar(texto, velocidad = 0.9) {
+      if (!('speechSynthesis' in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(texto);
+      u.lang = 'en-US'; u.rate = velocidad;
+      speechSynthesis.speak(u);
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

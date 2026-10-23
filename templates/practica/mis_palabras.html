@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% block titulo %}Mis palabras · English Lab{% endblock %}
+{% block contenido %}
+<h1>Mis palabras</h1>
+
+{% if puede_agregar %}
+  <div class="card">
+    <h2>Agregar una palabra</h2>
+    <form method="post">{% csrf_token %}
+      {{ form.as_p }}
+      <button class="btn" type="submit">Agregar</button>
+    </form>
+    <p class="muted">Tus palabras entran en las tarjetas y en el quiz junto con las demás.</p>
+  </div>
+{% else %}
+  <div class="card">
+    <h2>Todavía bloqueado</h2>
+    <p>Esta función se desbloquea cuando domines unas <b>{{ estado.desbloquea_en }}</b> palabras. Llevas <b>{{ estado.total }}</b>.</p>
+    <div class="barra"><i style="width: {{ estado.porcentaje_meta }}%"></i></div>
+    <div class="fila">
+      <a class="btn" href="{% url 'tarjetas' %}">Practicar</a>
+      <a class="btn sec" href="{% url 'nivel_intro' %}">Hacer el test de nivel</a>
+    </div>
+  </div>
+{% endif %}
+
+<div class="card">
+  <h2>Tu lista ({{ palabras|length }})</h2>
+  {% for p in palabras %}
+    <form method="post" action="{% url 'borrar_palabra' p.pk %}" class="fila" style="align-items:center;margin:0 0 4px">{% csrf_token %}
+      <span style="flex:1"><b>{{ p.ingles }}</b> = {{ p.espanol }}{% if p.ejemplo %} <span class="muted">· {{ p.ejemplo }}</span>{% endif %}</span>
+      <button class="btn sec" type="submit">Borrar</button>
+    </form>
+  {% empty %}<p class="muted">Aún no agregaste palabras.</p>{% endfor %}
+</div>
+{% endblock %}
