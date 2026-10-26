@@ -11,12 +11,18 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# En local lee .env; las variables ya definidas en el entorno (Docker, Render) tienen prioridad.
+load_dotenv(BASE_DIR / '.env')
 
 
 def _lista(nombre, defecto=''):
@@ -34,7 +40,19 @@ if not SECRET_KEY:
     SECRET_KEY = 'django-insecure-solo-para-desarrollo-local'
 
 ALLOWED_HOSTS = _lista('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1')
+# Render define el dominio público del servicio en esta variable.
+if os.environ.get('RENDER_EXTERNAL_HOSTNAME'):
+    ALLOWED_HOSTS.append(os.environ['RENDER_EXTERNAL_HOSTNAME'])
 CSRF_TRUSTED_ORIGINS = _lista('DJANGO_CSRF_TRUSTED_ORIGINS')
+
+# Detrás de HTTPS (Render): el proxy avisa del esquema y las cookies del admin viajan solo por HTTPS.
+if os.environ.get('DJANGO_HTTPS', '0').lower() in ('1', 'true', 'yes'):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# Origen(es) del frontend React. En desarrollo, el servidor de Vite.
+CORS_ALLOWED_ORIGINS = _lista('DJANGO_CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173')
 
 
 # Application definition
@@ -46,14 +64,18 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'corsheaders',
     'vocabulario',
     'verbos',
     'practica',
     'usuarios',
+    'api',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',  # antes de cualquier middleware que pueda responder
     'whitenoise.middleware.WhiteNoiseMiddleware',  # sirve los estáticos sin nginx
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -68,7 +90,7 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates'],
+        'DIRS': [],  # solo las plantillas del admin de Django
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -87,11 +109,11 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        # En Docker apunta a un volumen (/data) para que los datos sobrevivan al contenedor.
-        'NAME': os.environ.get('DJANGO_DB_PATH', BASE_DIR / 'db.sqlite3'),
-    }
+    # Con DATABASE_URL (Postgres de Supabase vía session pooler) usa Postgres; sin ella, SQLite local.
+    'default': dj_database_url.config(
+        default=f"sqlite:///{os.environ.get('DJANGO_DB_PATH', BASE_DIR / 'db.sqlite3')}",
+        conn_max_age=60,
+    )
 }
 
 
@@ -146,12 +168,17 @@ MAILERS = {
     },
 }
 
-LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'inicio'
-LOGOUT_REDIRECT_URL = 'login'
+# API para el frontend React: JWT en la cabecera Authorization (no cookies, así que no hay CSRF que gestionar).
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication'],
+    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
+}
 
-
-STATICFILES_DIRS = [BASE_DIR / 'static']
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
+}
 
 # Meta de vocabulario: al dominar ~el 90% se desbloquea agregar palabras propias.
 META_VOCABULARIO = 1000

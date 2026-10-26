@@ -1,8 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.core import signing
 from django.core.management import call_command
-from django.test import TestCase
-from django.urls import reverse
+from rest_framework.test import APITestCase
 
+from api.views import SAL_EJERCICIO
 from usuarios.models import Perfil
 from verbos.models import Verbo
 from vocabulario.models import Palabra
@@ -11,45 +12,38 @@ from . import servicios
 from .models import Intento
 
 
-class BaseTest(TestCase):
+class BaseTest(APITestCase):
     @classmethod
     def setUpTestData(cls):
         call_command('cargar_datos', verbosity=0)
         cls.user = get_user_model().objects.create_user('ana', password='clave-segura-123')
 
     def setUp(self):
-        self.client.force_login(self.user)
+        self.client.force_authenticate(self.user)
 
 
 class PracticaTests(BaseTest):
-    def test_paginas_cargan(self):
-        for nombre in ['inicio', 'tarjetas', 'quiz_vocab', 'quiz_verbos', 'progreso', 'lista_vocabulario',
-                       'lista_verbos', 'nivel_intro', 'nivel_test', 'consejos', 'mis_palabras']:
-            self.assertEqual(self.client.get(reverse(nombre)).status_code, 200, nombre)
-
-    def test_requiere_login(self):
-        self.client.logout()
-        resp = self.client.get(reverse('inicio'))
-        self.assertRedirects(resp, f"{reverse('login')}?next={reverse('inicio')}")
-
     def test_quiz_vocab_correcto_e_incorrecto(self):
-        self.client.get(reverse('quiz_vocab'))
-        palabra = Palabra.objects.get(pk=self.client.session['palabra_actual'])
-        resp = self.client.post(reverse('quiz_vocab'), {'respuesta': f'  {palabra.ingles.upper()} '})
-        self.assertTrue(resp.context['correcto'])
-        self.client.get(reverse('quiz_vocab'))
-        resp = self.client.post(reverse('quiz_vocab'), {'respuesta': 'zzz'})
-        self.assertFalse(resp.context['correcto'])
+        pregunta = self.client.get('/api/quiz/vocabulario/').data['palabra']
+        palabra = Palabra.objects.get(pk=pregunta['id'])
+        resp = self.client.post('/api/quiz/vocabulario/', {
+            'palabra_id': palabra.id, 'modo': 'traducir', 'respuesta': f'  {palabra.ingles.upper()} ',
+        }, format='json')
+        self.assertTrue(resp.data['correcto'])
+        resp = self.client.post('/api/quiz/vocabulario/', {
+            'palabra_id': palabra.id, 'modo': 'traducir', 'respuesta': 'zzz',
+        }, format='json')
+        self.assertFalse(resp.data['correcto'])
         self.assertEqual(Intento.objects.filter(usuario=self.user).count(), 2)
 
     def test_quiz_verbos_cada_tiempo(self):
         for tiempo in ['presente', 'pasado', 'futuro']:
-            self.client.get(reverse('quiz_verbos'), {'tiempo': tiempo})
-            actual = self.client.session['ejercicio_actual']
+            ejercicio = self.client.get('/api/quiz/verbos/', {'tiempo': tiempo}).data
+            valida = signing.loads(ejercicio['ticket'], salt=SAL_EJERCICIO)['respuestas'][0]
             resp = self.client.post(
-                reverse('quiz_verbos'), {'tiempo': tiempo, 'respuesta': actual['respuestas'][0]},
+                '/api/quiz/verbos/', {'ticket': ejercicio['ticket'], 'respuesta': valida}, format='json',
             )
-            self.assertTrue(resp.context['correcto'], (tiempo, actual))
+            self.assertTrue(resp.data['correcto'], (tiempo, ejercicio))
 
     def test_ejercicios_por_tiempo(self):
         go = Verbo.objects.get(infinitivo='go')
@@ -63,9 +57,7 @@ class PracticaTests(BaseTest):
 
     def test_tarjeta_registra_intento(self):
         p = Palabra.objects.first()
-        resp = self.client.post(
-            reverse('registrar_tarjeta'), {'palabra_id': p.id, 'correcto': True}, content_type='application/json',
-        )
+        resp = self.client.post('/api/tarjetas/registrar/', {'palabra_id': p.id, 'correcto': True}, format='json')
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(Intento.objects.get(tipo='tarjeta').correcto)
 
@@ -74,13 +66,6 @@ class PracticaTests(BaseTest):
         Intento.objects.create(usuario=self.user, tipo='vocab', palabra=p, correcto=False)
         self.assertEqual(servicios.racha(self.user), 1)
         self.assertEqual(servicios.resumen(self.user)['porcentaje'], 0)
-
-    def test_registro_de_usuario(self):
-        self.client.logout()
-        resp = self.client.post(reverse('registro'), {
-            'username': 'nuevo', 'password1': 'una-clave-larga-987', 'password2': 'una-clave-larga-987',
-        })
-        self.assertRedirects(resp, reverse('inicio'))
 
 
 class NivelTests(BaseTest):
@@ -134,24 +119,22 @@ class NivelTests(BaseTest):
         self.assertEqual(res['detalle']['1']['total'], 1)
 
     def test_post_guarda_perfil_y_muestra_resultado(self):
-        preguntas = servicios.construir_test()
-        resp = self.client.post(
-            reverse('nivel_test'), {'respuestas': self._respuestas(preguntas, 3)}, content_type='application/json',
-        )
+        preguntas = self.client.get('/api/nivel/test/').data['preguntas']
+        resp = self.client.post('/api/nivel/test/', {'respuestas': self._respuestas(preguntas, 3)}, format='json')
         self.assertEqual(resp.status_code, 200)
         perfil = Perfil.objects.get(usuario=self.user)
         self.assertEqual(perfil.nivel_inicial, 4)
         self.assertIsNotNone(perfil.test_fecha)
-        self.assertEqual(self.client.get(reverse('nivel_resultado')).status_code, 200)
+        self.assertEqual(self.client.get('/api/nivel/resultado/').status_code, 200)
 
     def test_post_invalido(self):
-        resp = self.client.post(reverse('nivel_test'), 'no es json', content_type='application/json')
+        resp = self.client.post('/api/nivel/test/', {'respuestas': 'no es una lista'}, format='json')
         self.assertEqual(resp.status_code, 400)
-        resp = self.client.post(reverse('nivel_test'), {'respuestas': []}, content_type='application/json')
+        resp = self.client.post('/api/nivel/test/', {'respuestas': []}, format='json')
         self.assertEqual(resp.status_code, 400)
 
-    def test_resultado_sin_test_redirige(self):
-        self.assertRedirects(self.client.get(reverse('nivel_resultado')), reverse('nivel_intro'))
+    def test_resultado_sin_test_da_404(self):
+        self.assertEqual(self.client.get('/api/nivel/resultado/').status_code, 404)
 
     def test_estado_cuenta_palabras_asumidas(self):
         Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 4})
@@ -182,34 +165,34 @@ class NivelTests(BaseTest):
 
 class MisPalabrasTests(BaseTest):
     def test_bloqueado_antes_de_dominar(self):
-        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
-        self.assertRedirects(resp, reverse('mis_palabras'))
+        resp = self.client.post('/api/mis-palabras/', {'ingles': 'zebra', 'espanol': 'cebra'}, format='json')
+        self.assertEqual(resp.status_code, 403)
         self.assertFalse(Palabra.objects.filter(ingles='zebra').exists())
 
     def test_desbloqueado_permite_agregar_y_son_privadas(self):
         Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 11})
         self.assertTrue(servicios.estado(self.user)['desbloqueado'])
-        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
-        self.assertRedirects(resp, reverse('mis_palabras'))
+        resp = self.client.post('/api/mis-palabras/', {'ingles': 'zebra', 'espanol': 'cebra'}, format='json')
+        self.assertEqual(resp.status_code, 201)
         palabra = Palabra.objects.get(ingles='zebra')
         self.assertEqual(palabra.propietario, self.user)
         # Otra persona no la ve ni puede borrarla.
         otro = get_user_model().objects.create_user('beto', password='clave-segura-123')
         self.assertFalse(Palabra.objects.visibles(otro).filter(ingles='zebra').exists())
-        self.client.force_login(otro)
-        self.client.post(reverse('borrar_palabra', args=[palabra.pk]))
+        self.client.force_authenticate(otro)
+        self.assertEqual(self.client.delete(f'/api/mis-palabras/{palabra.pk}/').status_code, 404)
         self.assertTrue(Palabra.objects.filter(pk=palabra.pk).exists())
 
     def test_no_permite_duplicar(self):
         Perfil.objects.update_or_create(usuario=self.user, defaults={'nivel_inicial': 11})
-        resp = self.client.post(reverse('mis_palabras'), {'ingles': 'Apple', 'espanol': 'manzana'})
-        self.assertEqual(resp.status_code, 200)
+        resp = self.client.post('/api/mis-palabras/', {'ingles': 'Apple', 'espanol': 'manzana'}, format='json')
+        self.assertEqual(resp.status_code, 400)
         self.assertFalse(Palabra.objects.filter(propietario=self.user).exists())
 
     def test_el_admin_puede_agregar_sin_desbloquear(self):
         self.user.is_staff = True
         self.user.save()
-        self.client.post(reverse('mis_palabras'), {'ingles': 'zebra', 'espanol': 'cebra'})
+        self.client.post('/api/mis-palabras/', {'ingles': 'zebra', 'espanol': 'cebra'}, format='json')
         self.assertTrue(Palabra.objects.filter(propietario=self.user, ingles='zebra').exists())
 
 
@@ -239,8 +222,8 @@ class TecnicoTests(BaseTest):
         palabras = servicios.elegir_palabras(self.user, 'dev-git', n=5)
         self.assertEqual(len(palabras), 5)
         self.assertTrue(all(p.categoria.slug == 'dev-git' for p in palabras))
-        resp = self.client.get(reverse('tarjetas'), {'categoria': 'dev-git'})
-        self.assertEqual(len(resp.context['palabras']), 20)
+        resp = self.client.get('/api/tarjetas/', {'categoria': 'dev-git'})
+        self.assertEqual(len(resp.data['palabras']), 20)
 
     def test_dominar_tecnico_no_cuenta_para_la_meta(self):
         antes = servicios.estado(self.user)['total']
@@ -252,10 +235,10 @@ class TecnicoTests(BaseTest):
         self.assertEqual(est['tecnicas_dominadas'], est['tecnicas_total'])
         self.assertFalse(est['desbloqueado'])
 
-    def test_inicio_muestra_seccion_tecnica(self):
-        resp = self.client.get(reverse('inicio'))
-        self.assertContains(resp, 'Inglés para desarrolladores')
-        self.assertContains(resp, 'dev-ops')
+    def test_inicio_incluye_categorias_tecnicas(self):
+        resp = self.client.get('/api/inicio/')
+        self.assertEqual(len(resp.data['categorias_tech']), 6)
+        self.assertIn('dev-ops', [c['slug'] for c in resp.data['categorias_tech']])
 
 
 class FrasesTests(BaseTest):
@@ -298,21 +281,24 @@ class FrasesTests(BaseTest):
 
     def test_dictado_frases_flujo(self):
         from vocabulario.models import Frase
-        self.assertEqual(self.client.get(reverse('dictado_frases')).status_code, 200)
-        frase = Frase.objects.get(pk=self.client.session['frase_actual'])
-        resp = self.client.post(reverse('dictado_frases'), {'respuesta': frase.texto})
-        self.assertTrue(resp.context['correcto'])
+        datos = self.client.get('/api/dictado/frases/').data
+        frase = Frase.objects.get(pk=datos['frase']['id'])
+        resp = self.client.post(
+            '/api/dictado/frases/', {'frase_id': frase.id, 'respuesta': frase.texto}, format='json',
+        )
+        self.assertTrue(resp.data['correcto'])
         intento = Intento.objects.get(tipo='frase')
         self.assertEqual((intento.puntaje, intento.frase), (100, frase))
-        self.client.get(reverse('dictado_frases'))
-        resp = self.client.post(reverse('dictado_frases'), {'respuesta': 'nada que ver'})
-        self.assertFalse(resp.context['correcto'])
+        resp = self.client.post(
+            '/api/dictado/frases/', {'frase_id': frase.id, 'respuesta': 'nada que ver'}, format='json',
+        )
+        self.assertFalse(resp.data['correcto'])
 
     def test_dictado_frases_filtra_por_tema(self):
         from vocabulario.models import Frase
         for _ in range(10):
-            self.client.get(reverse('dictado_frases'), {'tema': 'diario'})
-            self.assertEqual(Frase.objects.get(pk=self.client.session['frase_actual']).tema, 'diario')
+            datos = self.client.get('/api/dictado/frases/', {'tema': 'diario'}).data
+            self.assertEqual(Frase.objects.get(pk=datos['frase']['id']).tema, 'diario')
 
     def test_frase_fallada_pesa_mas(self):
         from vocabulario.models import Frase
@@ -325,9 +311,9 @@ class FrasesTests(BaseTest):
 
 
 class OralTests(BaseTest):
-    def test_paginas(self):
-        for nombre in ['oral', 'oral_historial']:
-            self.assertEqual(self.client.get(reverse(nombre)).status_code, 200, nombre)
+    def test_endpoints_responden(self):
+        for ruta in ['/api/oral/', '/api/oral/historial/']:
+            self.assertEqual(self.client.get(ruta).status_code, 200, ruta)
 
     def test_preguntas_cargadas(self):
         from .models import PreguntaOral
@@ -335,42 +321,45 @@ class OralTests(BaseTest):
         self.assertEqual(set(PreguntaOral.objects.values_list('tema', flat=True)), {'entrevista', 'tecnica', 'reunion'})
         self.assertFalse(PreguntaOral.objects.filter(modelo='').exists())
 
-    def test_la_pregunta_del_dia_se_mantiene_y_se_puede_cambiar(self):
-        p1 = self.client.get(reverse('oral')).context['pregunta']
-        p2 = self.client.get(reverse('oral')).context['pregunta']
-        self.assertEqual(p1, p2)
-        p3 = self.client.get(reverse('oral'), {'otra': 1}).context['pregunta']
-        self.assertNotEqual(p1, p3)
-        self.assertEqual(self.client.get(reverse('oral')).context['pregunta'], p3)
+    def test_otra_pregunta_no_repite_la_anterior(self):
+        p1 = self.client.get('/api/oral/').data['pregunta']
+        for _ in range(10):
+            otra = self.client.get('/api/oral/', {'excluir': p1['id']}).data['pregunta']
+            self.assertNotEqual(otra['id'], p1['id'])
 
     def test_filtro_por_tema(self):
-        p = self.client.get(reverse('oral'), {'tema': 'reunion'}).context['pregunta']
-        self.assertEqual(p.tema, 'reunion')
+        p = self.client.get('/api/oral/', {'tema': 'reunion'}).data['pregunta']
+        self.assertEqual(p['tema'], 'reunion')
 
     def test_registrar_practica(self):
-        from .models import RegistroOral
-        p = self.client.get(reverse('oral')).context['pregunta']
-        resp = self.client.post(reverse('oral_registrar'), {
-            'pregunta_id': p.id, 'duracion': '75', 'autoevaluacion': '4', 'notas': 'más vocabulario',
-        })
-        self.assertRedirects(resp, reverse('oral_historial'))
+        from .models import PreguntaOral, RegistroOral
+        p = self.client.get('/api/oral/').data['pregunta']
+        resp = self.client.post('/api/oral/registrar/', {
+            'pregunta_id': p['id'], 'duracion': 75, 'autoevaluacion': 4, 'notas': 'más vocabulario',
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
         r = RegistroOral.objects.get(usuario=self.user)
-        self.assertEqual((r.pregunta, r.duracion_seg, r.autoevaluacion), (p, 75, 4))
-        self.assertContains(self.client.get(reverse('oral_historial')), p.texto)
+        self.assertEqual((r.pregunta, r.duracion_seg, r.autoevaluacion), (PreguntaOral.objects.get(pk=p['id']), 75, 4))
+        self.assertEqual(self.client.get('/api/oral/historial/').data['registros'][0]['pregunta'], p['texto'])
 
     def test_registrar_rechaza_nota_invalida(self):
         from .models import RegistroOral
-        p = self.client.get(reverse('oral')).context['pregunta']
-        for nota in ['0', '6', 'x', '']:
-            self.client.post(reverse('oral_registrar'), {'pregunta_id': p.id, 'autoevaluacion': nota})
+        p = self.client.get('/api/oral/').data['pregunta']
+        for nota in [0, 6, 'x', '']:
+            resp = self.client.post(
+                '/api/oral/registrar/', {'pregunta_id': p['id'], 'autoevaluacion': nota}, format='json',
+            )
+            self.assertEqual(resp.status_code, 400, nota)
         self.assertFalse(RegistroOral.objects.exists())
 
     def test_registrar_limita_duracion_y_requiere_post(self):
         from .models import RegistroOral
-        p = self.client.get(reverse('oral')).context['pregunta']
-        self.client.post(reverse('oral_registrar'), {'pregunta_id': p.id, 'autoevaluacion': '3', 'duracion': '99999'})
+        p = self.client.get('/api/oral/').data['pregunta']
+        self.client.post(
+            '/api/oral/registrar/', {'pregunta_id': p['id'], 'autoevaluacion': 3, 'duracion': 99999}, format='json',
+        )
         self.assertEqual(RegistroOral.objects.get().duracion_seg, 3600)
-        self.assertEqual(self.client.get(reverse('oral_registrar')).status_code, 405)
+        self.assertEqual(self.client.get('/api/oral/registrar/').status_code, 405)
 
     def test_elegir_pregunta_prefiere_las_no_practicadas(self):
         from .models import PreguntaOral, RegistroOral
@@ -394,4 +383,4 @@ class OralTests(BaseTest):
         from .models import PreguntaOral, RegistroOral
         otro = get_user_model().objects.create_user('beto', password='clave-segura-123')
         RegistroOral.objects.create(usuario=otro, pregunta=PreguntaOral.objects.first(), autoevaluacion=5, notas='SECRETO')
-        self.assertNotContains(self.client.get(reverse('oral_historial')), 'SECRETO')
+        self.assertEqual(self.client.get('/api/oral/historial/').data['registros'], [])

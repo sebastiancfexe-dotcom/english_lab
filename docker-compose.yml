@@ -1,18 +1,31 @@
 services:
-  web:
+  # Backend Django (solo API + /admin). La base de datos es Postgres en Supabase.
+  api:
     build: .
     ports:
       - "8000:8000"
     environment:
+      DATABASE_URL: ${DATABASE_URL:?Define DATABASE_URL en .env (Supabase > Connect > Session pooler)}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Copia .env.example a .env y define DJANGO_SECRET_KEY}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
       DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-}
       DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-}
       DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
-    volumes:
-      - english_data:/data
     restart: unless-stopped
 
-volumes:
-  english_data:
+  # Frontend React en modo desarrollo (Vite). En producción se publica como sitio estático.
+  web:
+    image: node:24-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # evita pisar los binarios de Linux con los de tu sistema
+    depends_on:
+      - api

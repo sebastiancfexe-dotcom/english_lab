@@ -5,3 +5,5 @@ db.sqlite3
 staticfiles/
 .env
 .vscode/
+.playwright-mcp/
+frontend/node_modules/

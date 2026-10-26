@@ -1,67 +1,92 @@
 # English Lab
 
-App en Django para practicar inglés: vocabulario por niveles, verbos, inglés para desarrolladores, dictado de frases y práctica oral.
+App para practicar inglés: vocabulario por niveles, verbos, inglés para desarrolladores, dictado de frases y práctica oral.
 
-## Con Docker (recomendado para moverlo a otro equipo)
+| Pieza | Tecnología | Dónde vive |
+|---|---|---|
+| Frontend | React + Vite (`frontend/`) | Sitio estático en Render |
+| Backend | Django + Django REST Framework, solo API (`api/`) y `/admin` | Servicio Docker en Render |
+| Base de datos | PostgreSQL | Supabase (plan gratuito) |
 
-Necesitas Docker con Compose. En Windows, Docker Desktop requiere WSL 2 (`wsl --install` en una terminal de administrador, y reiniciar).
+El navegador habla solo con el API de Django (login con JWT). Supabase se usa únicamente como Postgres alojado.
+
+## Puesta en marcha en local
+
+Necesitas Python 3.13 y Node.js 24.
+
+1. **Base de datos.** Crea un proyecto en [supabase.com](https://supabase.com) y copia la cadena de conexión
+   *Connect → Session pooler*. Usa una contraseña de solo letras y números.
+2. **Variables de entorno.**
+
+   ```bash
+   cp .env.example .env        # en PowerShell: Copy-Item .env.example .env
+   ```
+
+   Edita `.env`: define `DJANGO_SECRET_KEY` (el comando para generarla está en el archivo) y `DATABASE_URL`.
+   Sin `DATABASE_URL` el backend usa SQLite local.
+3. **Backend.**
+
+   ```bash
+   python -m venv .venv && .venv/Scripts/activate      # Linux/Mac: source .venv/bin/activate
+   pip install -r requirements.txt
+   python manage.py migrate
+   python manage.py cargar_datos      # vocabulario, verbos, frases y preguntas orales (puede tardar unos minutos sobre Supabase)
+   python manage.py runserver 8000
+   ```
+
+4. **Frontend.**
+
+   ```bash
+   cd frontend
+   cp .env.example .env.local         # VITE_API_URL=http://localhost:8000
+   npm install
+   npm run dev
+   ```
+
+Abre http://localhost:5173 y crea tu cuenta. Un administrador para `/admin`: `python manage.py createsuperuser`.
+
+## Con Docker
 
 ```bash
-cp .env.example .env        # en PowerShell: Copy-Item .env.example .env
-# Edita .env y define DJANGO_SECRET_KEY (ahí mismo hay un comando para generarla)
+cp .env.example .env                 # y completa DJANGO_SECRET_KEY y DATABASE_URL
 docker compose up -d --build
 ```
 
-Abre http://localhost:8000. En el primer arranque se cargan las palabras, verbos, frases y preguntas.
-
-Crear un administrador (para `/admin`):
-
-```bash
-docker compose exec web python manage.py createsuperuser
-```
-
-Comandos útiles:
+- API: http://localhost:8000 (healthcheck en `/api/salud/`, admin en `/admin/`)
+- Frontend (Vite): http://localhost:5173
 
 ```bash
-docker compose logs -f web      # ver el log
-docker compose down             # apagar (los datos se conservan)
-docker compose up -d --build    # aplicar cambios del código
-docker compose down -v          # apagar y BORRAR los datos
+docker compose logs -f api           # ver el log
+docker compose down                  # apagar (los datos viven en Supabase, no en el contenedor)
 ```
 
-### Dónde quedan los datos
-La base de datos SQLite vive en el volumen `english_lab_english_data` (dentro del contenedor, `/data/db.sqlite3`), así que sobrevive a reinicios y reconstrucciones.
+## Despliegue en Render
 
-Copia de seguridad:
+El archivo `render.yaml` define las dos piezas (plan gratuito).
+
+1. Sube el repositorio a GitHub.
+2. En Render: **New → Blueprint** y elige el repositorio. Crea `english-lab-api` y `english-lab`.
+3. Cuando lo pida, completa las variables marcadas como secretas:
+   - `english-lab-api`: `DATABASE_URL` (Session pooler de Supabase), `DJANGO_CORS_ALLOWED_ORIGINS` y
+     `DJANGO_CSRF_TRUSTED_ORIGINS` con la URL del sitio estático (por ejemplo `https://english-lab.onrender.com`).
+   - `english-lab`: `VITE_API_URL` con la URL del API (por ejemplo `https://english-lab-api.onrender.com`).
+4. Si las URLs reales difieren de las supuestas, corrige esas variables y redespliega el sitio estático
+   (`VITE_API_URL` se incorpora al compilar).
+
+Límites del plan gratuito: el API se duerme tras unos 15 minutos sin tráfico y la primera petición tarda cerca de un
+minuto en despertarlo; Supabase pausa el proyecto tras una semana sin actividad.
+
+## Tests
 
 ```bash
-docker compose cp web:/data/db.sqlite3 ./copia-db.sqlite3
+DATABASE_URL=sqlite:///:memory: python manage.py test      # PowerShell: $env:DATABASE_URL='sqlite:///:memory:'
 ```
 
-Llevar tu base de datos local a Docker (progreso y usuarios incluidos), con el contenedor ya levantado una vez:
+Corren contra SQLite en memoria para no crear bases de datos de prueba en Supabase.
 
-```bash
-docker compose cp ./db.sqlite3 web:/data/db.sqlite3
-docker compose restart web
-```
+## Estructura
 
-### Si lo publicas en un servidor
-- Pon el dominio en `DJANGO_ALLOWED_HOSTS` y `DJANGO_CSRF_TRUSTED_ORIGINS` (con `https://`).
-- Usa HTTPS delante (Caddy, nginx o el proxy de tu proveedor). Sin HTTPS las contraseñas viajan en claro.
-- Usa una `DJANGO_SECRET_KEY` propia y larga.
-
-## Sin Docker (desarrollo)
-
-```bash
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe manage.py migrate
-.venv\Scripts\python.exe manage.py cargar_datos
-.venv\Scripts\python.exe manage.py createsuperuser
-.venv\Scripts\python.exe manage.py runserver
-```
-
-Pruebas: `.venv\Scripts\python.exe manage.py test practica`
-
-## Contenido
-`cargar_datos` carga o actualiza el contenido y se puede repetir sin duplicar, pero **pisa las traducciones y ejemplos que hayas editado en el admin**. Con `--si-vacio` solo carga si la base está vacía (así lo usa Docker al arrancar).
+- `api/`: endpoints JSON, JWT y tests de la API.
+- `practica/`, `vocabulario/`, `verbos/`, `usuarios/`: modelos y lógica (`practica/servicios.py` concentra el test de
+  nivel, el dominio de palabras, la selección de ejercicios y las estadísticas).
+- `frontend/`: la app React.
