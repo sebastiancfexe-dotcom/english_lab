@@ -384,3 +384,135 @@ class OralTests(BaseTest):
         otro = get_user_model().objects.create_user('beto', password='clave-segura-123')
         RegistroOral.objects.create(usuario=otro, pregunta=PreguntaOral.objects.first(), autoevaluacion=5, notas='SECRETO')
         self.assertEqual(self.client.get('/api/oral/historial/').data['registros'], [])
+
+
+class ExamenAdaptativoTests(BaseTest):
+    def _responder(self, historial, aciertos=True):
+        """Pide la siguiente pregunta y la contesta bien (o mal) añadiéndola al historial."""
+        paso = servicios.paso_examen(historial)
+        self.assertFalse(paso['terminado'])
+        q = paso['pregunta']
+        elegida = q['id'] if aciertos else next(o['id'] for o in q['opciones'] if o['id'] != q['id'])
+        historial.append({'palabra_id': q['id'], 'elegida_id': elegida})
+        return paso
+
+    def test_empieza_en_el_nivel_mas_bajo(self):
+        paso = servicios.paso_examen([])
+        self.assertFalse(paso['terminado'])
+        self.assertEqual(Palabra.objects.get(pk=paso['pregunta']['id']).nivel, 1)
+        self.assertEqual(paso['progreso']['nivel'], 1)
+        self.assertEqual(paso['progreso']['avance'], 0)
+        self.assertEqual(len(paso['progreso']['niveles']), servicios.BLOQUES)
+
+    def test_sube_de_nivel_al_acertar(self):
+        historial = []
+        for _ in range(servicios.EXAMEN_ACIERTOS):
+            self._responder(historial)
+        paso = servicios.paso_examen(historial)
+        self.assertEqual(paso['progreso']['nivel'], 2)
+        self.assertEqual(paso['progreso']['aprobados'], 1)
+        self.assertEqual(Palabra.objects.get(pk=paso['pregunta']['id']).nivel, 2)
+
+    def test_no_repite_palabras(self):
+        historial = []
+        for _ in range(servicios.EXAMEN_ACIERTOS + 1):
+            self._responder(historial)
+        ids = [r['palabra_id'] for r in historial]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_termina_al_reprobar_un_nivel(self):
+        historial = []
+        for _ in range(servicios.EXAMEN_ACIERTOS):  # aprueba el nivel 1
+            self._responder(historial)
+        for _ in range(servicios.EXAMEN_FALLOS):    # reprueba el nivel 2
+            self._responder(historial, aciertos=False)
+        paso = servicios.paso_examen(historial)
+        self.assertTrue(paso['terminado'])
+        res = paso['resultado']
+        self.assertEqual(res['nivel_inicial'], 2)
+        self.assertTrue(res['detalle']['1']['aprobado'])
+        self.assertFalse(res['detalle']['2']['aprobado'])
+        self.assertEqual(len(res['errores']), servicios.EXAMEN_FALLOS)
+        self.assertEqual({e['bloque'] for e in res['errores']}, {2})
+        self.assertGreaterEqual(res['vocab_estimado'], Palabra.objects.oficiales().filter(nivel=1).count())
+
+    def test_fallar_todo_deja_el_nivel_1(self):
+        historial = []
+        for _ in range(servicios.EXAMEN_FALLOS):
+            self._responder(historial, aciertos=False)
+        res = servicios.paso_examen(historial)['resultado']
+        self.assertEqual(res['nivel_inicial'], 1)
+        self.assertEqual(res['vocab_estimado'], 0)
+
+    def test_aprobar_todo_completa_el_nucleo(self):
+        historial = []
+        while not servicios.paso_examen(historial)['terminado']:
+            self._responder(historial)
+        res = servicios.paso_examen(historial)['resultado']
+        self.assertEqual(res['nivel_inicial'], servicios.BLOQUES + 1)
+        self.assertEqual(len(historial), servicios.BLOQUES * servicios.EXAMEN_ACIERTOS)
+        self.assertEqual(res['errores'], [])
+
+    def test_ignora_respuestas_de_otro_nivel_duplicadas_y_basura(self):
+        dificil = Palabra.objects.oficiales().filter(nivel=5).first()
+        facil = Palabra.objects.oficiales().filter(nivel=1).first()
+        paso = servicios.paso_examen([
+            {'palabra_id': dificil.id, 'elegida_id': dificil.id},   # no es del nivel actual
+            {'palabra_id': facil.id, 'elegida_id': facil.id},
+            {'palabra_id': facil.id, 'elegida_id': facil.id},       # duplicada
+            'texto', {}, {'palabra_id': 'x'}, {'palabra_id': 999999, 'elegida_id': 1},
+        ])
+        self.assertEqual(paso['progreso']['aciertos_nivel'], 1)
+        self.assertEqual(paso['progreso']['nivel'], 1)
+
+    def test_endpoint_guarda_el_resultado_al_terminar(self):
+        historial = []
+        for _ in range(servicios.EXAMEN_FALLOS):
+            self._responder(historial, aciertos=False)
+        resp = self.client.post('/api/nivel/examen/', {'historial': historial}, format='json')
+        self.assertTrue(resp.data['terminado'])
+        perfil = Perfil.objects.get(usuario=self.user)
+        self.assertEqual(perfil.nivel_inicial, 1)
+        self.assertEqual(len(perfil.errores), servicios.EXAMEN_FALLOS)
+        self.assertEqual(self.client.get('/api/nivel/resultado/').data['errores'], perfil.errores)
+
+    def test_endpoint_devuelve_pregunta_sin_guardar_mientras_dura(self):
+        resp = self.client.post('/api/nivel/examen/', {'historial': []}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data['terminado'])
+        self.assertIn('pregunta', resp.data)
+        self.assertIsNone(Perfil.de(self.user).test_fecha)
+
+    def test_endpoint_rechaza_historial_invalido(self):
+        for malo in ('no es lista', [{}] * 201):
+            resp = self.client.post('/api/nivel/examen/', {'historial': malo}, format='json')
+            self.assertEqual(resp.status_code, 400)
+
+    def test_endpoint_requiere_login(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post('/api/nivel/examen/', {'historial': []}, format='json').status_code, 401)
+
+
+class QuizPorNivelTests(BaseTest):
+    def test_quiz_vocab_respeta_el_nivel_pedido(self):
+        for nivel in (1, 5, 10):
+            for _ in range(5):
+                pregunta = self.client.get('/api/quiz/vocabulario/', {'nivel': nivel}).data['palabra']
+                self.assertEqual(Palabra.objects.get(pk=pregunta['id']).nivel, nivel)
+
+    def test_nivel_fuera_de_rango_se_ignora(self):
+        for malo in ('0', '11', 'abc', '-1'):
+            self.assertEqual(self.client.get('/api/quiz/vocabulario/', {'nivel': malo}).status_code, 200)
+
+    def test_nivel_no_trae_palabras_propias_ni_tecnicas(self):
+        for _ in range(30):
+            pregunta = self.client.get('/api/quiz/vocabulario/', {'nivel': 3}).data['palabra']
+            palabra = Palabra.objects.get(pk=pregunta['id'])
+            self.assertIsNone(palabra.propietario_id)
+            self.assertFalse(palabra.categoria.es_tecnica)
+
+    def test_nivel_info_en_intro(self):
+        datos = self.client.get('/api/nivel/').data
+        self.assertEqual(len(datos['niveles']), servicios.BLOQUES)
+        self.assertEqual(datos['niveles'][0], {'numero': 1, 'nombre': 'Inicial', 'cefr': 'A1'})
+        self.assertEqual(datos['quiz']['preguntas'], servicios.QUIZ_PREGUNTAS)

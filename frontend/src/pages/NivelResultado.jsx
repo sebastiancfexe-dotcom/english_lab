@@ -9,11 +9,15 @@ export default function NivelResultado() {
 
   return (
     <Estado carga={carga}>
-      {({ estado, bloques, errores, completo }) => {
+      {({ estado, bloques, niveles, errores, completo }) => {
         const perfil = estado.perfil
+        // Nivel alcanzado = el último aprobado; si no aprobó ninguno, el primero.
+        const alcanzado = niveles[Math.min(Math.max(perfil.nivel_inicial - 1, 1), niveles.length) - 1]
         return (
           <>
-            <h1>Tu nivel: {estado.etiqueta}</h1>
+            <h1>
+              Tu nivel: {alcanzado.nombre} <span className="muted">({alcanzado.cefr})</span>
+            </h1>
 
             <div className="card grid">
               <div className="stat">
@@ -22,7 +26,7 @@ export default function NivelResultado() {
               </div>
               <div className="stat">
                 <b>{completo ? '✓' : perfil.nivel_inicial}</b>
-                <span>{completo ? 'núcleo completo' : 'bloque donde empiezas'}</span>
+                <span>{completo ? 'núcleo completo' : 'nivel donde empiezas'}</span>
               </div>
               <div className="stat">
                 <b>{estado.porcentaje_meta}%</b>
@@ -31,19 +35,19 @@ export default function NivelResultado() {
             </div>
 
             <div className="card">
-              <h2>Dominio por bloque</h2>
+              <h2>Resultado por nivel</h2>
               <p className="muted">
-                Bloque 1 = palabras más básicas, bloque 10 = las más difíciles del núcleo. Verde: lo das por conocido.
+                Nivel 1 = palabras más básicas, nivel 10 = las más difíciles del núcleo. Verde: nivel aprobado.
               </p>
               {bloques.map((b) => (
                 <div key={b.numero}>
                   <p>
-                    Bloque {b.numero} · {b.dominio}%{' '}
+                    Nivel {b.numero} · {b.total ? `${b.dominio}%` : 'sin evaluar'}{' '}
                     <span className="muted">
                       ({b.aciertos}/{b.total} aciertos)
                     </span>
                   </p>
-                  <Barra valor={b.dominio} color={b.dominio >= 80 ? 'var(--ok)' : undefined} />
+                  <Barra valor={b.dominio} color={(b.aprobado ?? b.dominio >= 80) ? 'var(--brand-mark)' : undefined} />
                 </div>
               ))}
             </div>
@@ -59,7 +63,7 @@ export default function NivelResultado() {
                         <th>Inglés</th>
                         <th>Significa</th>
                         <th>Tu respuesta</th>
-                        <th>Bloque</th>
+                        <th>Nivel</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -92,8 +96,8 @@ export default function NivelResultado() {
               ) : (
                 <>
                   <p>
-                    Las palabras de los bloques anteriores al {perfil.nivel_inicial} se dan por conocidas. La práctica se
-                    centra desde el bloque {perfil.nivel_inicial}, y avanzas al siguiente cuando domines el 80% del actual.
+                    Las palabras de los niveles anteriores al {perfil.nivel_inicial} se dan por conocidas. La práctica se
+                    centra desde el nivel {perfil.nivel_inicial}, y avanzas al siguiente cuando domines el 80% del actual.
                   </p>
                   <div className="fila">
                     <Link className="btn" to="/tarjetas">
@@ -103,7 +107,7 @@ export default function NivelResultado() {
                       Ver consejos para aprender
                     </Link>
                     <Link className="btn sec" to="/nivel">
-                      Repetir el test
+                      Repetir el examen
                     </Link>
                   </div>
                 </>

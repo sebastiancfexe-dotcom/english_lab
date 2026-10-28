@@ -7,22 +7,32 @@ export default function NivelIntro() {
 
   return (
     <>
-      <h1>Test de nivel</h1>
+      <h1>Examen de nivel</h1>
       <Estado carga={carga}>
-        {({ perfil, preguntas_total: total }) => (
+        {({ perfil, niveles, examen }) => (
           <div className="card">
             <p>
-              Son <b>{total} preguntas</b> de opción múltiple (inglés → español), repartidas en 10 bloques de dificultad
-              creciente.
+              Es un examen de opción múltiple (inglés → español) que <b>sube de dificultad</b> a medida que aciertas.
+              Empiezas en el nivel 1 y avanzas por {niveles.length} niveles.
             </p>
             <ul>
               <li>
-                Responde rápido, sin buscar nada. Si no la sabes, usa <b>«No la sé»</b>: adivinar baja la precisión de tu
-                resultado.
+                Pasas de nivel al acertar <b>{examen.aciertos}</b> palabras. El examen termina cuando fallas{' '}
+                <b>{examen.fallos}</b> en un mismo nivel, y ese es tu nivel.
               </li>
-              <li>Con tus aciertos estimo cuántas palabras conoces y desde qué bloque conviene empezar.</li>
-              <li>Es una estimación. Puedes repetir el test cuando quieras.</li>
+              <li>
+                Responde sin buscar nada. Si no la sabes, usa <b>«No la sé»</b>: es mejor que adivinar.
+              </li>
+              <li>
+                Durante el examen verás tres barras: tu avance, el nivel de dificultad donde estás y la racha de aciertos
+                del nivel.
+              </li>
+              <li>Al final verás las palabras que fallaste. Es una estimación y puedes repetirlo cuando quieras.</li>
             </ul>
+            <p className="muted">
+              Niveles: {niveles.map((n) => `${n.numero} ${n.nombre} (${n.cefr})`).join(' · ')}. La equivalencia con A1–C2
+              es aproximada.
+            </p>
             {perfil.test_fecha && (
               <p className="muted">
                 Tu último resultado: ~{perfil.vocab_estimado} palabras (
@@ -30,7 +40,7 @@ export default function NivelIntro() {
               </p>
             )}
             <Link className="btn" to="/nivel/test">
-              Empezar el test
+              Empezar el examen
             </Link>
           </div>
         )}

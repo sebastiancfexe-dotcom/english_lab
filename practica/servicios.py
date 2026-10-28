@@ -24,6 +24,26 @@ ACIERTOS_PARA_DOMINAR = 3   # una palabra se domina con 3+ aciertos y 80%+ de pr
 PRECISION_PARA_DOMINAR = 0.8
 PESO_DOMINADA = 0.2         # las palabras ya dominadas siguen apareciendo, pero poco
 
+# Examen adaptativo: se sube de nivel al acertar EXAMEN_ACIERTOS y termina al fallar EXAMEN_FALLOS en un mismo nivel.
+EXAMEN_ACIERTOS = 4
+EXAMEN_FALLOS = 2
+
+# Práctica con dificultad creciente (quiz de vocabulario): sube con una racha de aciertos, baja con una de fallos.
+QUIZ_RACHA_SUBE = 3
+QUIZ_RACHA_BAJA = 2
+QUIZ_PREGUNTAS = 20
+
+NOMBRES_NIVEL = {
+    1: 'Inicial', 2: 'Básico', 3: 'Elemental', 4: 'Pre-intermedio', 5: 'Intermedio',
+    6: 'Intermedio alto', 7: 'Avanzado bajo', 8: 'Avanzado', 9: 'Superior', 10: 'Experto',
+}
+# Equivalencia aproximada con el Marco Común Europeo; los bloques no están calibrados con él.
+CEFR_NIVEL = {1: 'A1', 2: 'A1', 3: 'A2', 4: 'A2', 5: 'B1', 6: 'B1', 7: 'B2', 8: 'B2', 9: 'C1', 10: 'C2'}
+
+
+def niveles():
+    return [{'numero': n, 'nombre': NOMBRES_NIVEL[n], 'cefr': CEFR_NIVEL[n]} for n in range(1, BLOQUES + 1)]
+
 
 def normalizar(texto):
     return ' '.join(texto.lower().split())
@@ -31,33 +51,43 @@ def normalizar(texto):
 
 # ---------------------------------------------------------------- test de nivel
 
-def construir_test():
-    """Elige PREGUNTAS_POR_BLOQUE palabras por bloque, con opciones de bloques vecinos como distractores."""
+def _agrupar_por_bloque():
     por_bloque = defaultdict(list)
     for p in Palabra.objects.oficiales().filter(nivel__isnull=False):
         por_bloque[p.nivel].append(p)
+    return por_bloque
 
+
+def _armar_pregunta(palabra, por_bloque):
+    """Pregunta de opción múltiple (inglés → español) con distractores de los bloques vecinos."""
+    bloque = palabra.nivel
+    vecinas = por_bloque.get(bloque - 1, []) + por_bloque.get(bloque, []) + por_bloque.get(bloque + 1, [])
+    vistos = {palabra.espanol}
+    distractores = []
+    random.shuffle(vecinas)
+    for otra in vecinas:
+        if otra.espanol not in vistos:
+            vistos.add(otra.espanol)
+            distractores.append(otra)
+        if len(distractores) == OPCIONES - 1:
+            break
+    opciones = distractores + [palabra]
+    random.shuffle(opciones)
+    return {
+        'id': palabra.id,
+        'ingles': palabra.ingles,
+        'opciones': [{'id': o.id, 'espanol': o.espanol} for o in opciones],
+    }
+
+
+def construir_test():
+    """Elige PREGUNTAS_POR_BLOQUE palabras por bloque, con opciones de bloques vecinos como distractores."""
+    por_bloque = _agrupar_por_bloque()
     preguntas = []
     for bloque in range(1, BLOQUES + 1):
         palabras = por_bloque.get(bloque, [])
         for palabra in random.sample(palabras, min(PREGUNTAS_POR_BLOQUE, len(palabras))):
-            vecinas = por_bloque.get(bloque - 1, []) + palabras + por_bloque.get(bloque + 1, [])
-            vistos = {palabra.espanol}
-            distractores = []
-            random.shuffle(vecinas)
-            for otra in vecinas:
-                if otra.espanol not in vistos:
-                    vistos.add(otra.espanol)
-                    distractores.append(otra)
-                if len(distractores) == OPCIONES - 1:
-                    break
-            opciones = distractores + [palabra]
-            random.shuffle(opciones)
-            preguntas.append({
-                'id': palabra.id,
-                'ingles': palabra.ingles,
-                'opciones': [{'id': o.id, 'espanol': o.espanol} for o in opciones],
-            })
+            preguntas.append(_armar_pregunta(palabra, por_bloque))
     return preguntas
 
 
@@ -110,6 +140,110 @@ def evaluar_nivel(respuestas):
     if nivel_inicial is None:
         nivel_inicial = max(tamanos, default=0) + 1  # domina todo el núcleo
     return {'vocab_estimado': round(estimado), 'nivel_inicial': nivel_inicial, 'detalle': detalle, 'errores': errores}
+
+
+# ---------------------------------------------------------------- examen adaptativo
+
+def _repetir_examen(historial):
+    """Reconstruye el examen desde el historial de respuestas. El servidor corrige todo; el cliente solo manda ids.
+
+    Se empieza en el nivel más bajo. En cada nivel se aprueba con EXAMEN_ACIERTOS aciertos y se reprueba con
+    EXAMEN_FALLOS fallos; al reprobar, el examen termina y ese es el nivel del usuario.
+    """
+    entradas = [r for r in historial if isinstance(r, dict)]
+    palabras = {
+        p.id: p for p in Palabra.objects.oficiales().filter(
+            id__in=[r['palabra_id'] for r in entradas if isinstance(r.get('palabra_id'), int)], nivel__isnull=False,
+        )
+    }
+    espanol_de = dict(Palabra.objects.filter(
+        id__in=[r['elegida_id'] for r in entradas if isinstance(r.get('elegida_id'), int)],
+    ).values_list('id', 'espanol'))
+
+    tamanos = dict(Palabra.objects.oficiales().filter(nivel__isnull=False).values_list('nivel').annotate(n=Count('id')))
+    orden = sorted(tamanos)
+    detalle = {n: {'aciertos': 0, 'total': 0, 'aprobado': False} for n in orden}
+    errores, vistas = [], set()
+    posicion, terminado = 0, not orden
+
+    for r in entradas:
+        if terminado:
+            break
+        nivel = orden[posicion]
+        palabra = palabras.get(r.get('palabra_id'))
+        if palabra is None or palabra.id in vistas or palabra.nivel != nivel:
+            continue
+        vistas.add(palabra.id)
+        cuenta = detalle[nivel]
+        cuenta['total'] += 1
+        if r.get('elegida_id') == palabra.id:
+            cuenta['aciertos'] += 1
+        else:
+            errores.append({
+                'bloque': nivel, 'ingles': palabra.ingles, 'correcta': palabra.espanol,
+                'elegida': espanol_de.get(r.get('elegida_id')),  # None = "No la sé"
+            })
+        if cuenta['aciertos'] >= EXAMEN_ACIERTOS:
+            cuenta['aprobado'] = True
+            posicion += 1
+            terminado = posicion >= len(orden)
+        elif cuenta['total'] - cuenta['aciertos'] >= EXAMEN_FALLOS:
+            terminado = True
+
+    return {
+        'orden': orden, 'tamanos': tamanos, 'detalle': detalle, 'errores': errores, 'vistas': vistas,
+        'posicion': posicion, 'nivel': orden[min(posicion, len(orden) - 1)] if orden else 0, 'terminado': terminado,
+    }
+
+
+def _resultado_examen(estado):
+    """Un nivel aprobado cuenta completo en el vocabulario estimado; el que se reprobó, según su precisión sin azar."""
+    detalle, estimado, nivel_inicial = {}, 0.0, None
+    for nivel in estado['orden']:
+        cuenta = estado['detalle'][nivel]
+        precision = cuenta['aciertos'] / cuenta['total'] if cuenta['total'] else 0
+        dominio = max(0.0, (precision - PROBABILIDAD_AZAR) / (1 - PROBABILIDAD_AZAR))
+        detalle[str(nivel)] = {
+            'aciertos': cuenta['aciertos'], 'total': cuenta['total'],
+            'dominio': round(dominio * 100), 'aprobado': cuenta['aprobado'],
+        }
+        estimado += estado['tamanos'][nivel] if cuenta['aprobado'] else dominio * estado['tamanos'][nivel]
+        if nivel_inicial is None and not cuenta['aprobado']:
+            nivel_inicial = nivel
+    if nivel_inicial is None:
+        nivel_inicial = max(estado['orden'], default=0) + 1  # aprobó todo el núcleo
+    return {
+        'vocab_estimado': round(estimado), 'nivel_inicial': nivel_inicial,
+        'detalle': detalle, 'errores': estado['errores'],
+    }
+
+
+def paso_examen(historial):
+    """Dado el historial devuelve la siguiente pregunta con su progreso, o el resultado si el examen terminó."""
+    estado = _repetir_examen(historial)
+    nivel = estado['nivel']
+    por_bloque = _agrupar_por_bloque()
+    candidatas = [p for p in por_bloque.get(nivel, []) if p.id not in estado['vistas']]
+    # Si el nivel se quedó sin palabras sin decidirse, el examen se cierra ahí.
+    if estado['terminado'] or not candidatas:
+        return {'terminado': True, 'resultado': _resultado_examen(estado)}
+
+    cuenta = estado['detalle'][nivel]
+    return {
+        'terminado': False,
+        'pregunta': _armar_pregunta(random.choice(candidatas), por_bloque),
+        'progreso': {
+            'nivel': nivel,
+            'niveles': niveles(),
+            'aprobados': estado['posicion'],
+            'aciertos_nivel': cuenta['aciertos'],
+            'fallos_nivel': cuenta['total'] - cuenta['aciertos'],
+            'necesarios': EXAMEN_ACIERTOS,
+            'max_fallos': EXAMEN_FALLOS,
+            'respondidas': len(estado['vistas']),
+            'avance': round(100 * (estado['posicion'] + cuenta['aciertos'] / EXAMEN_ACIERTOS) / len(estado['orden'])),
+        },
+    }
 
 
 def guardar_nivel(usuario, resultado):
@@ -205,16 +339,18 @@ def estado(usuario):
 
 # ---------------------------------------------------------------- selección de palabras
 
-def elegir_palabras(usuario, categoria_slug=None, n=1):
+def elegir_palabras(usuario, categoria_slug=None, n=1, nivel=None):
     """Elige n palabras distintas, con más peso a las que se fallan y menos a las dominadas.
 
     Sin categoría se trabaja el bloque activo del usuario (más las palabras temáticas y propias).
-    El vocabulario técnico solo aparece cuando se elige su categoría.
+    El vocabulario técnico solo aparece cuando se elige su categoría. Con `nivel` solo salen palabras de ese bloque.
     """
     est = estado(usuario)
     candidatas = Palabra.objects.visibles(usuario)
     if categoria_slug:
         candidatas = candidatas.filter(categoria__slug=categoria_slug)
+    elif nivel:
+        candidatas = candidatas.filter(nivel=nivel, propietario__isnull=True).exclude(categoria__es_tecnica=True)
     else:
         tope = est['bloque_activo'] or est['ultimo_bloque']
         candidatas = candidatas.exclude(categoria__es_tecnica=True).filter(
@@ -242,8 +378,8 @@ def elegir_palabras(usuario, categoria_slug=None, n=1):
     return elegidas
 
 
-def elegir_palabra(usuario, categoria_slug=None):
-    elegidas = elegir_palabras(usuario, categoria_slug, 1)
+def elegir_palabra(usuario, categoria_slug=None, nivel=None):
+    elegidas = elegir_palabras(usuario, categoria_slug, 1, nivel)
     return elegidas[0] if elegidas else None
 
 

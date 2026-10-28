@@ -151,6 +151,13 @@ def nivel_intro(request):
     return Response({
         'perfil': _perfil(est['perfil']),
         'preguntas_total': servicios.BLOQUES * servicios.PREGUNTAS_POR_BLOQUE,
+        'niveles': servicios.niveles(),
+        'quiz': {
+            'preguntas': servicios.QUIZ_PREGUNTAS,
+            'racha_sube': servicios.QUIZ_RACHA_SUBE,
+            'racha_baja': servicios.QUIZ_RACHA_BAJA,
+        },
+        'examen': {'aciertos': servicios.EXAMEN_ACIERTOS, 'fallos': servicios.EXAMEN_FALLOS},
     })
 
 
@@ -165,6 +172,21 @@ def nivel_test(request):
     return Response({'preguntas': servicios.construir_test()})
 
 
+@api_view(['POST'])
+def nivel_examen(request):
+    """Examen adaptativo sin estado en el servidor: el cliente manda el historial y recibe el siguiente paso."""
+    historial = request.data.get('historial', [])
+    if not isinstance(historial, list) or len(historial) > 200:
+        return Response({'ok': False}, status=status.HTTP_400_BAD_REQUEST)
+    paso = servicios.paso_examen(historial)
+    if paso['terminado']:
+        if not historial:  # no hay nivel sin palabras cargadas: no se pisa el perfil con un resultado vacío
+            return Response({'ok': False}, status=status.HTTP_404_NOT_FOUND)
+        servicios.guardar_nivel(request.user, paso['resultado'])
+        return Response({'terminado': True})
+    return Response(paso)
+
+
 @api_view(['GET'])
 def nivel_resultado(request):
     est = servicios.estado(request.user)
@@ -175,6 +197,7 @@ def nivel_resultado(request):
     return Response({
         'estado': _estado(est),
         'bloques': bloques,
+        'niveles': servicios.niveles(),
         'errores': perfil.errores,
         'completo': perfil.nivel_inicial > est['ultimo_bloque'],
     })
@@ -264,7 +287,9 @@ def quiz_vocab(request):
         )
         return Response({'correcto': correcto, 'palabra': _palabra(palabra)})
 
-    palabra = servicios.elegir_palabra(request.user, request.query_params.get('categoria') or None)
+    nivel = request.query_params.get('nivel', '')
+    nivel = int(nivel) if nivel.isdigit() and 1 <= int(nivel) <= servicios.BLOQUES else None
+    palabra = servicios.elegir_palabra(request.user, request.query_params.get('categoria') or None, nivel)
     if palabra is None:
         return Response({'vacio': True})
     if request.query_params.get('modo') == 'dictado':

@@ -12,6 +12,7 @@ urlpatterns = [
     path('inicio/', views.inicio),
     path('nivel/', views.nivel_intro),
     path('nivel/test/', views.nivel_test),
+    path('nivel/examen/', views.nivel_examen),
     path('nivel/resultado/', views.nivel_resultado),
     path('consejos/', views.consejos),
     path('mis-palabras/', views.mis_palabras),

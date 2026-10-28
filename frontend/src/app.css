@@ -232,3 +232,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .btn-tabla { background: none; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .btn-tabla:hover { background: var(--hover); color: var(--ink); }
 .vacio-grafico { color: var(--muted); font-size: 14px; padding: 36px 0; text-align: center; }
+
+/* ---------- Barras del quiz por niveles ---------- */
+.barras-nivel { display: grid; gap: 16px; margin-bottom: 16px; }
+.bn-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 6px; font-size: 14px; }
+.bn-cab > span:first-child { color: var(--muted); }
+.tramos { display: grid; gap: 4px; }
+.tramos i { display: block; height: 10px; border-radius: 4px; background: var(--track); transition: background 0.3s ease; }
+.tramos i.hecho { background: var(--brand-mark); }
+.tramos i.actual { background: var(--brand); box-shadow: 0 0 0 2px var(--brand-strong); }
